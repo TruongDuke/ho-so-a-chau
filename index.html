@@ -198,36 +198,49 @@ table.tt td { padding:4px 6px 4px 0; vertical-align:middle; }
   const caiDau = s => s.replace(/[.;,\s]+$/, "").trim();
   const chuThuong = s => !s || /[a-zà-ỹ]/.test(s) ? s : s.toLowerCase().replace(/(^|\s)(\S)/g, (m, a, c) => a + c.toUpperCase()); // "Á CHÂU 18" -> "Á Châu 18"
 
+  // Đọc hợp đồng theo cách chung (không phụ thuộc từng mẫu): mỗi bên là 1 đoạn bắt đầu bằng "BÊN A…/BÊN THUÊ…/BÊN VẬN CHUYỂN…:";
+  // bên KHÔNG phải Á Châu là bên thuê. Mỗi thông tin lấy theo nhãn, dừng ở nhãn kế tiếp.
+  const NHAN = String.raw`(?:Địa chỉ(?:\s*(?:ĐKKD|trụ sở(?: chính)?|gửi thư))?|Điện thoại|Email|Emai|Fax|Mã số thuế|MST|Tài khoản(?: số)?|Số tài khoản|Người đại diện|Đại diện(?: theo pháp luật)?|Chức vụ|Sau đây|Hai bên|BÊN\s+[AB]\b|BÊN\s+(?:THUÊ|VẬN|NHẬN|CHO))`;
+  const truong = (s, nhan) => caiDau(lay(new RegExp(String.raw`(?:^|[\s.;])` + nhan + String.raw`\s*:\s*(.*?)\s*(?=` + NHAN + String.raw`\s*:|Sau đây|Hai bên|$)`, "i"), s));
+
   function docHopDong(t) {
     const f = phang(t), r = {};
-    r.so_hd = lay(/HỢP ĐỒNG VẬN CHUYỂN\s*Số\s*:?\s*([^\s]+)/i, f);
+    r.so_hd = lay(/HỢP ĐỒNG(?: VẬN CHUYỂN| KINH TẾ)?\s*Số\s*:?\s*([^\s]+)/i, f);
     r.ngay_hd = ngayChu(lay(/(ngày\s*\d{1,2}\s*tháng\s*\d{1,2}\s*năm\s*\d{4})/i, f.slice(f.indexOf(r.so_hd) + 1)));
-    const benA = lay(/BÊN A\b(.*?)BÊN B\b/i, f), benB = lay(/BÊN B\b\s*\((.*?)(Hai bên|Điều 1)/i, "BÊN B (" + f.split(/BÊN B\b\s*\(/i).slice(1).join("BÊN B ("));
+    // các đoạn "bên": từ tiêu đề bên tới tiêu đề bên kế tiếp / "Hai bên" / "Điều 1"
+    const reBen = /(BÊN\s+[AB]\b[^:]{0,60}:|BÊN\s+(?:THUÊ|VẬN|NHẬN|CHO)[^:]{0,40}:)/g, mo = [...f.matchAll(reBen)].slice(0, 4);
+    const doan = mo.map((m, i) => f.slice(m.index + m[0].length, i + 1 < mo.length ? mo[i + 1].index : undefined).split(/Hai bên|ĐIỀU 1|Điều 1\b/i)[0]);
+    const thue = doan.find(d => !/Á CHÂU/i.test(d.slice(0, 120))) || doan[0] || "", ac = doan.find(d => /Á CHÂU/i.test(d.slice(0, 120))) || "";
     const ben = (s, k) => {
-      r[k + "_ten"] = caiDau(lay(/\)\s*:\s*(.*?)\s*Địa chỉ/i, s));
-      r[k + "_dia_chi"] = caiDau(lay(/Địa chỉ(?:\s*(?:ĐKKD|trụ sở(?: chính)?))?\s*:\s*(.*?)\s*(Địa chỉ gửi thư|Điện thoại|Mã số thuế|Tài khoản)/i, s));
-      r[k + "_mst"] = lay(/Mã số thuế\s*:\s*([\d-]+)/i, s);
-      r[k + "_dai_dien"] = boOngBa(lay(/(?:Người đại diện|Đại diện)(?:\s*theo pháp luật)?\s*:\s*(.*?)\s*Chức vụ/i, s));
-      r[k + "_chuc_vu"] = hoaDauCau(caiDau(lay(/Chức vụ\s*:\s*(.*?)\s*(?:\.\s|\.$|Tài khoản|Điện thoại|Mã số thuế|$)/i, s)));
-      r[k + "_tk"] = caiDau(lay(/Tài khoản(?: số)?\s*:\s*(.*?)\s*(?:Mã số thuế|Đại diện|Người đại diện|Điện thoại|$)/i, s));
+      r[k + "_ten"] = caiDau(lay(/^\s*(.*?)\s*(?=Địa chỉ)/i, s));
+      r[k + "_dia_chi"] = truong(s, String.raw`Địa chỉ(?:\s*(?:ĐKKD|trụ sở(?: chính)?))?`);
+      r[k + "_mst"] = lay(/(?:Mã số thuế|MST)\s*:\s*([\d-]+)/i, s);
+      r[k + "_dai_dien"] = boOngBa(truong(s, String.raw`(?:Người đại diện|Đại diện)(?: theo pháp luật)?`));
+      r[k + "_chuc_vu"] = hoaDauCau(truong(s, "Chức vụ"));
+      r[k + "_tk"] = truong(s, String.raw`(?:Số tài khoản|Tài khoản(?: số)?)`);
     };
-    ben(benA, "a"); ben(benB, "b");
-    let hang = lay(new RegExp(String.raw`(?:Loại hàng hóa|Hàng hóa)\s*:\s*(.*?)` + HET, "i"), f).replace(/\(\s*(.*?)\s*\)/, "$1");
-    const quyCach = lay(new RegExp(String.raw`Quy cách\s*:\s*(.*?)` + HET, "i"), f);
-    hang = caiDau(hang);
-    if (/rời/i.test(quyCach) && !/rời/i.test(hang)) hang += " dạng rời";
+    ben(thue, "a"); ben(ac, "b");
+    // tới đây chỉ cần phần nội dung (sau phần các bên)
+    const nd = f.slice(mo.length ? mo[mo.length - 1].index : 0);
+    const muc = nhan => caiDau(lay(new RegExp(String.raw`(?:^|[\s.;])` + nhan + String.raw`\s*:\s*(?:\([^)]*\)\s*)?(?:tại\s+)?(.*?)(?=\s+-\s|\s*;|` + HET.slice(3), "i"), nd));
+    let hang = muc(String.raw`(?:Loại hàng hóa|Hàng hóa|Tên hàng(?: hóa)?)`).replace(/\(\s*(.*?)\s*\)/, "$1");
+    if (/rời/i.test(muc("Quy cách")) && !/rời/i.test(hang)) hang += " dạng rời";
     r.hang = hang.replace(/\s+/g, " ");
-    r.kl_dk = soVN(lay(/(?:Khối lượng|Sản lượng) dự kiến\s*:\s*([\d.,]+)/i, f));
-    r.dvt = lay(/(?:Khối lượng|Sản lượng) dự kiến\s*:\s*[\d.,]+\s*(tấn|m3|m³|chuyến)/i, f) || "tấn";
-    r.tau = chuThuong(caiDau(lay(/Tên tàu\s*:\s*(.*?)\s*(?:\.?\s*TTTP|Trọng tải|\s\d+\.\d+\s|\s\d\.\s|$)/i, f))).replace(/\(\s*(.*?)\s*\)/, "($1)");
-    const cang = nhan => caiDau(lay(new RegExp(nhan + String.raw`\s*:\s*(?:\([^)]*\)\s*)?(?:tại\s*)?(.*?)` + HET, "i"), f));
-    r.cang_xep = cang("Cảng xếp hàng"); r.cang_do = cang("Cảng dỡ hàng");
-    r.don_gia = soVN(lay(/Cước (?:phí )?vận chuyển[^:\d]{0,40}:\s*([\d.,]+)\s*(?:đồng|đ|VNĐ)/i, f));
-    // tỷ lệ tạm ứng lần đầu + điều/mục hợp đồng quy định ("điều 2, mục 2.3")
-    const mTU = /(?:Lần 1\s*:|a\))[^%]{0,80}?(\d+(?:[.,]\d+)?)\s*%/i.exec(f);
+    r.kl_dk = soVN(lay(/(?:Khối lượng|Sản lượng)(?: hàng)? dự kiến\s*:\s*([\d.,]+)/i, nd));
+    r.dvt = lay(/(?:Khối lượng|Sản lượng)(?: hàng)? dự kiến\s*:\s*[\d.,]+\s*(tấn|m3|m³|chuyến)/i, nd) || "tấn";
+    r.tau = chuThuong(caiDau(lay(/Tên tàu\s*:\s*(.*?)\s*(?:\.?\s*TTTP|Trọng tải|\s+-\s|\s\d+\.\d+\s|\s\d\.\s|$)/i, nd))).replace(/\(\s*(.*?)\s*\)/, "($1)");
+    r.cang_xep = muc(String.raw`Cảng (?:xếp|nhận) hàng`); r.cang_do = muc(String.raw`Cảng (?:dỡ|trả) hàng`);
+    if (!r.cang_xep || !r.cang_do) { // không có mục cảng riêng: lấy câu "từ cảng … đến cảng …"
+      const m = /từ\s+((?:cảng|bến)\s.*?)\s+đến\s+((?:cảng|bến)\s.*?)(?=\s*(?:\.\s|:|;|,?\s+do tàu|,?\s+bằng|\s+ĐIỀU|\s+Điều\s+\d|\s+-\s|$))/i.exec(nd);
+      if (m) { r.cang_xep = r.cang_xep || caiDau(m[1]); r.cang_do = r.cang_do || caiDau(m[2]); }
+    }
+    // đơn giá: số "… đồng/tấn" đầu tiên (bỏ qua số tiền phạt "đồng/ngày")
+    r.don_gia = soVN(lay(/(\d{1,3}(?:[.,]\d{3})+|\d{4,})\s*(?:đồng|đ|vnđ|VNĐ)\s*\/\s*(?:01\s*|1\s*|một\s*)?(?:tấn|m3|m³|chuyến)/i, nd));
+    // tỷ lệ tạm ứng lần đầu + điều/mục quy định
+    const mTU = /(?:Lần 1\s*:|a\)|tạm ứng)[^%]{0,80}?(\d+(?:[.,]\d+)?)\s*%/i.exec(nd);
     r.pt_tu = mTU ? Number(mTU[1].replace(",", ".")) : 50;
-    const truoc = mTU ? f.slice(0, mTU.index) : "", muc = [...truoc.matchAll(/(?:^|\s)(\d+)\.(\d+)\.?\s+[^\d\s]/g)].pop();
-    r.can_cu = muc ? `điều ${muc[1]}, mục ${muc[1]}.${muc[2]}` : "";
+    const truoc = mTU ? nd.slice(0, mTU.index) : "", mm = [...truoc.matchAll(/(?:^|\s)(\d+)\s*\.\s*(\d+)\s*\.?\s+[^\d\s]/g)].pop();
+    r.can_cu = mm ? `điều ${mm[1]}, mục ${mm[1]}.${mm[2]}` : "";
     return r;
   }
 
