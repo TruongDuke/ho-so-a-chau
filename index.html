@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hồ sơ cước Á Châu</title>
+<link rel="icon" href="data:,">
 <script src="lib/pdf.min.js"></script>
 <script src="lib/jszip.min.js"></script>
 <style>
@@ -25,6 +26,8 @@ h1 { font-size:22px; margin:4px 0 2px; }
 input { font:inherit; color:var(--chu); border:1px solid var(--vien); border-radius:8px; padding:7px 9px; background:#fff; width:100%; }
 input:focus { outline:2px solid var(--nhan); outline-offset:-1px; }
 input.trong { background:var(--vang); }
+input.soat { border-color:#e0a100; box-shadow:0 0 0 1px #e0a100 inset; }
+.dang { color:var(--nhan); font-size:13px; margin-top:6px; }
 .tep { margin-top:8px; font-size:13px; color:var(--xanh); }
 .loi { background:var(--donen); color:var(--do); border-radius:8px; padding:8px 10px; margin-top:10px; font-size:14px; }
 .canh { background:var(--vang); border-radius:8px; padding:8px 10px; margin-top:10px; font-size:14px; }
@@ -188,7 +191,7 @@ table.tt td { padding:4px 6px 4px 0; vertical-align:middle; }
   }
 
   // ---------- tách số liệu ----------
-  const phang = t => t.normalize("NFC").replace(/[–—]/g, "-").replace(/\s+/g, " ");
+  const phang = t => t.normalize("NFC").replace(/Ð/g, "Đ").replace(/ð/g, "đ").replace(/[⁄^|_~`¦«»]+/g, " ").replace(/\s&\s(?=\S{0,3}\s)/g, " ").replace(/[–—]/g, "-").replace(/\s+/g, " ");
   const ngayChu = s => { const m = /ngày\s*(\d{1,2})\s*tháng\s*(\d{1,2})\s*năm\s*(\d{4})/i.exec(s); return m ? `${m[1].padStart(2, "0")}/${m[2].padStart(2, "0")}/${m[3]}` : ""; };
   const lay = (re, t, k = 1) => { const m = re.exec(t); return m ? m[k].trim() : ""; };
   const hoaDauCau = s => s ? s[0].toUpperCase() + s.slice(1).toLowerCase() : s; // "Giám Đốc" -> "Giám đốc"
@@ -388,6 +391,7 @@ function veO(khung, truong, dl) {
     i.value = kieu === "so" ? A.vnLe(v) : kieu === "so3" ? A.vn(v, 3) : (v ?? "");
     if (i.value === "" || i.value === "NaN") { i.value = ""; if (k !== "phu_luc") i.className = "trong"; }
     i.oninput = () => { dl[k] = kieu && kieu.startsWith("so") ? A.soVN(i.value) : i.value.trim(); i.className = i.value ? "" : "trong"; capNhat(); };
+    if (dl._scan && !(kieu && kieu.startsWith("so"))) i.classList.add("soat");
     l.append(nhan, i); khung.append(l);
   });
 }
@@ -404,9 +408,33 @@ async function docPDF(file) {
   const d = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()), cMapUrl: "lib/cmaps/", cMapPacked: true, standardFontDataUrl: "lib/standard_fonts/" }).promise;
   const t = []; let manh = 0;
   for (let p = 1; p <= d.numPages; p++) { const it = (await (await d.getPage(p)).getTextContent()).items; manh += it.length; t.push(A.dongChu(it)); }
-  const kq = t.join("\n");
+  let kq = t.join("\n");
+  docPDF.scan = false;
+  if (kq.replace(/\s/g, "").length < 200) { // bản scan: đọc chữ từ ảnh từng trang
+    docPDF.scan = true;
+    kq = await docAnh(d, docPDF.tienDo || (() => {}));
+  }
   docPDF.chanDoan = `${file.name}: ${d.numPages} trang, ${manh} mảnh chữ, ${kq.replace(/\s/g, "").length} ký tự — ${navigator.userAgent.replace(/^.*?\)\s*/, "").slice(0, 80)}`;
   return kq;
+}
+
+// OCR tiếng Việt (tesseract.js, chạy trong trình duyệt, file nằm cùng trang)
+let OCR = null;
+const tuyetDoi = p => new URL(p, location.href).href;
+async function docAnh(d, tienDo) {
+  if (!window.Tesseract) await new Promise((ok, loi) => { const sc = document.createElement("script"); sc.src = "lib/tesseract/tesseract.min.js"; sc.onload = ok; sc.onerror = () => loi(new Error("Không tải được bộ đọc ảnh (cần có mạng).")); document.head.append(sc); });
+  tienDo("Đang chuẩn bị bộ đọc ảnh (lần đầu hơi lâu)…");
+  OCR = OCR || await Tesseract.createWorker("vie", 1, { workerPath: tuyetDoi("lib/tesseract/worker.min.js"), corePath: tuyetDoi("lib/tesseract/"), langPath: tuyetDoi("lib/tessdata"), gzip: true });
+  await OCR.setParameters({ tessedit_pageseg_mode: "4", preserve_interword_spaces: "1" });
+  const ra = [];
+  for (let p = 1; p <= d.numPages; p++) {
+    tienDo(`Bản scan — đang đọc chữ từ ảnh trang ${p}/${d.numPages}…`);
+    const trang = await d.getPage(p), v = trang.getViewport({ scale: 200 / 72 }), c = document.createElement("canvas");
+    c.width = Math.round(v.width); c.height = Math.round(v.height);
+    await trang.render({ canvasContext: c.getContext("2d"), viewport: v }).promise;
+    ra.push((await OCR.recognize(c)).data.text);
+  }
+  return ra.join("\n");
 }
 
 function thaFile(tha, tep, fn) {
@@ -419,17 +447,20 @@ function thaFile(tha, tep, fn) {
 
 thaFile($("thaHD"), $("tepHD"), async f => {
   $("loiHD").textContent = ""; $("tenHD").textContent = "Đang đọc " + f.name + "…";
+  docPDF.tienDo = m => $("tenHD").textContent = m;
   let moi = {};
   try {
     const t = await docPDF(f);
-    if (t.replace(/\s/g, "").length < 200) throw new Error("File này là ảnh chụp/scan (bản đã ký rồi scan lại), máy không đọc được chữ. Chị kéo bản PDF xuất từ Word hoặc file Word của hợp đồng vào nhé; không có thì gõ tay các ô bên dưới.");
+    if (t.replace(/\s/g, "").length < 200) throw new Error("Không đọc được chữ trong file này (ảnh quá mờ?). Chị kéo bản PDF xuất từ Word hoặc file Word của hợp đồng vào nhé; không có thì gõ tay các ô bên dưới.");
     moi = A.docHopDong(t);
-    $("tenHD").textContent = "✓ Đã đọc: " + f.name;
+    $("tenHD").textContent = (docPDF.scan ? "✓ Đã đọc (bản scan): " : "✓ Đã đọc: ") + f.name;
     const thieu = [];
     if (!moi.so_hd) thieu.push("số hợp đồng");
     if (!moi.kl_dk) thieu.push("khối lượng (hợp đồng không ghi số — chị gõ khối lượng đã xếp theo cân cảng xếp để tính tạm ứng)");
     if (!moi.don_gia) thieu.push("đơn giá");
-    if (thieu.length) $("loiHD").textContent = "Máy chưa đọc được: " + thieu.join("; ") + ". Các ô màu vàng chị gõ tay nhé.";
+    let bao = thieu.length ? "Máy chưa đọc được: " + thieu.join("; ") + ". Các ô màu vàng chị gõ tay nhé." : "";
+    if (docPDF.scan) { moi._scan = true; bao = "⚠ Đây là BẢN SCAN — máy đọc chữ từ ảnh nên có thể sai, nhất là chữ có dấu (tên công ty, địa chỉ, tên người). Chị soát kỹ các ô viền cam trước khi tải file nhé." + (bao ? "<br>" + bao : ""); }
+    $("loiHD").innerHTML = bao;
   } catch (e) { $("tenHD").textContent = "✗ " + f.name; $("loiHD").innerHTML = e.message + `<br><small>Chẩn đoán (chụp gửi Đức): ${docPDF.chanDoan || (e && e.stack || "").slice(0, 200)}</small>`; }
   // hợp đồng mới (hoặc đọc lỗi): bỏ hết số của hợp đồng cũ, kể cả hoá đơn + các lần thanh toán
   if (!HD || moi.so_hd !== HD.so_hd || !moi.so_hd) { HDON = null; $("oHDon").innerHTML = ""; $("tenHDon").textContent = ""; $("dsTT").innerHTML = ""; dongTT(); }
@@ -437,11 +468,12 @@ thaFile($("thaHD"), $("tepHD"), async f => {
   veO($("oHD"), TRUONG_HD, HD); capNhat();
 });
 thaFile($("thaHDon"), $("tepHDon"), async f => {
-  $("loiHDon").textContent = "";
+  $("loiHDon").textContent = ""; docPDF.tienDo = m => $("tenHDon").textContent = m;
   try {
     const t = await docPDF(f);
-    if (t.replace(/\s/g, "").length < 100) throw new Error("PDF này là ảnh chụp/scan, không có chữ để đọc. Chị gõ tay các ô bên dưới nhé.");
+    if (t.replace(/\s/g, "").length < 100) throw new Error("Không đọc được chữ trong file này. Chị gõ tay các ô bên dưới nhé.");
     HDON = A.docHoaDon(t);
+    if (docPDF.scan) { HDON._scan = true; $("loiHDon").innerHTML = "⚠ Hoá đơn bản scan — máy đọc từ ảnh, chị soát kỹ từng số trước khi tải file nhé."; }
     $("tenHDon").textContent = "✓ Đã đọc: " + f.name;
     if (!HDON.tong_hdon) $("loiHDon").textContent = "Không thấy tổng tiền — có thể không phải hoá đơn GTGT. Chị kiểm lại các ô bên dưới.";
   } catch (e) { HDON = HDON || {}; $("loiHDon").innerHTML = e.message + `<br><small>Chẩn đoán (chụp gửi Đức): ${docPDF.chanDoan || (e && e.stack || "").slice(0, 200)}</small>`; }
