@@ -50,6 +50,8 @@ table.tt td { padding:4px 6px 4px 0; vertical-align:middle; }
 .xuat .o p { margin:0 0 8px; font-size:13px; color:var(--mo); }
 .hd { font-size:13px; color:var(--mo); margin-top:14px; }
 .hd b { color:var(--chu); }
+#vungIn { display:none; }
+@media print { body > main { display:none !important; } #vungIn { display:block !important; } body { background:#fff; } }
 @media (max-width:560px) { .luoi { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -99,15 +101,16 @@ table.tt td { padding:4px 6px 4px 0; vertical-align:middle; }
     </div>
     <div class="xuat">
       <div class="o"><h3>Đề nghị tạm ứng</h3><p id="moTU">Cần hợp đồng.</p>
-        <div class="nhom"><button class="nut chinh" data-mau="tam-ung" data-dau="1">Có dấu (gửi đọc trước)</button><button class="nut" data-mau="tam-ung">Không dấu (in ký)</button></div></div>
+        <div class="nhom"><button class="nut chinh" data-pdf="tam-ung" data-dau="1">PDF có dấu</button><button class="nut" data-mau="tam-ung" data-dau="1">Word có dấu</button><button class="nut" data-mau="tam-ung">Word không dấu (in ký)</button></div></div>
       <div class="o"><h3>Đề nghị thanh toán</h3><p id="moTT">Cần hợp đồng + hoá đơn.</p>
-        <div class="nhom"><button class="nut chinh" data-mau="de-nghi-tt" data-dau="1">Có dấu (gửi đọc trước)</button><button class="nut" data-mau="de-nghi-tt">Không dấu (in ký)</button></div></div>
+        <div class="nhom"><button class="nut chinh" data-pdf="de-nghi-tt" data-dau="1">PDF có dấu</button><button class="nut" data-mau="de-nghi-tt" data-dau="1">Word có dấu</button><button class="nut" data-mau="de-nghi-tt">Word không dấu (in ký)</button></div></div>
       <div class="o"><h3>Biên bản quyết toán</h3><p id="moQT">Cần hợp đồng + hoá đơn.</p>
-        <div class="nhom"><button class="nut chinh" data-mau="quyet-toan">Tải biên bản</button></div></div>
+        <div class="nhom"><button class="nut chinh" data-mau="quyet-toan">Tải biên bản (Word)</button><button class="nut" data-pdf="quyet-toan">PDF</button></div></div>
     </div>
-    <p class="hd"><b>Ra file PDF:</b> mở file Word vừa tải → <b>Tệp → Lưu thành (Save As) → chọn PDF</b>. Bản "có dấu" lưu PDF để gửi bên kia đọc trước; bản "không dấu" in ra ký, đóng dấu thật.</p>
+    <p class="hd"><b>PDF có dấu:</b> bấm nút → hiện hộp In → ở ô <b>Máy in / Đích</b> chọn <b>"Lưu dưới dạng PDF"</b> (Save as PDF) → <b>Lưu</b>. Chrome nhớ lựa chọn này cho lần sau. Bản "Word không dấu" để in ra ký, đóng dấu thật.</p>
   </section>
 </main>
+<div id="vungIn"></div>
 
 <script>/* Lõi dùng chung (trình duyệt + node): đọc chữ PDF, tách số liệu hợp đồng / hoá đơn, đọc số thành chữ, điền mẫu Word. */
 (function (g) {
@@ -526,7 +529,7 @@ function capNhat() {
   }
   $("tom").innerHTML = tom;
   $("canh").innerHTML = canh.join("<br>");
-  document.querySelectorAll("[data-mau]").forEach(b => b.disabled = !HD || (b.dataset.mau !== "tam-ung" && !HDON));
+  document.querySelectorAll("[data-mau],[data-pdf]").forEach(b => { const m = b.dataset.mau || b.dataset.pdf; b.disabled = !HD || (m !== "tam-ung" && !HDON); });
 }
 
 const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -547,18 +550,52 @@ $("tepDau").onchange = async () => {
   veDau();
 };
 veDau();
-document.querySelectorAll("[data-mau]").forEach(b => b.onclick = async () => {
-  const mau = b.dataset.mau, dau = !!b.dataset.dau, g = A.giaTri(HD, mau === "tam-ung" ? null : HDON, them(dau));
-  const thieu = Object.entries({ "Số hợp đồng": g.so_hd, "Bên A": g.a_ten, ...(mau !== "tam-ung" ? { "Số hoá đơn": g.so_hdon, "Tổng hoá đơn": g.tong_hdon } : { "Khối lượng dự kiến": g.kl_dk, "Đơn giá": g.don_gia }) }).filter(([, v]) => !v).map(([k]) => k);
-  if (thieu.length && !confirm("Còn trống: " + thieu.join(", ") + ". Vẫn tải file?")) return;
-  if (dau && !DAU) return alert('Chưa có ảnh dấu. Chị bấm "Chọn ảnh dấu…" và chọn file ảnh dấu em gửi qua Zalo (chỉ làm 1 lần).');
+// dựng file Word rồi in ra PDF: vẽ Word bằng docx-preview, đặt khổ giấy + lề đúng như file Word, mở hộp In
+const napScript = src => new Promise((ok, loi) => { const sc = document.createElement("script"); sc.src = src; sc.onload = ok; sc.onerror = () => loi(new Error("Không tải được " + src)); document.head.append(sc); });
+async function inPDF(bytes, ten) {
+  if (!window.docx) await napScript("lib/docx-preview.min.js");
+  const v = $("vungIn"); v.innerHTML = "";
+  await docx.renderAsync(new Blob([bytes]), v, null, { inWrapper: false, breakPages: true, ignoreLastRenderedPageBreak: true, useBase64URL: true, renderHeaders: true, renderFooters: true });
+  const sec = v.querySelector("section"), cs = sec.style;
+  const kho = `${cs.width || "210mm"} ${cs.minHeight || "297mm"}`, le = [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(x => x || "20mm").join(" ");
+  let st = document.getElementById("kieuIn"); if (!st) { st = document.createElement("style"); st.id = "kieuIn"; document.head.append(st); }
+  st.textContent = `@page { size: ${kho}; margin: ${le}; } @media print { #vungIn section { padding:0 !important; width:auto !important; min-height:0 !important; box-shadow:none !important; margin:0 !important; background:#fff !important; } #vungIn .docx-wrapper { padding:0 !important; background:#fff !important; } }`;
+  await Promise.all([...v.querySelectorAll("img")].map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; })));
+  // đo nội dung theo đúng bề rộng trang in; chỉ tràn ít (≤ 22%, trình duyệt dàn dòng thưa hơn Word) thì thu nhỏ cho vừa số trang như bản Word
+  const px = x => { const m = /([\d.]+)(pt|mm|px|in)/.exec(x || ""); return m ? +m[1] * { pt: 96 / 72, mm: 96 / 25.4, px: 1, in: 96 }[m[2]] : 0; };
+  const [W, H] = kho.split(" ").map(px), [mt, mr, mb, ml] = le.split(" ").map(px), cao = H - mt - mb;
+  Object.assign(v.style, { display: "block", position: "absolute", left: "-20000px", top: "0" });
+  v.querySelectorAll("section").forEach(x => Object.assign(x.style, { padding: "0", width: (W - ml - mr) + "px", minHeight: "0" }));
+  const tong = [...v.querySelectorAll("section")].reduce((t, x) => t + x.scrollHeight, 0), trang = Math.ceil(tong / cao), du = tong - (trang - 1) * cao;
+  v.removeAttribute("style");
+  const thuNho = trang > 1 && tong <= (trang - 1) * cao * 1.22 ? ((trang - 1) * cao / tong) * 0.98 : 1;
+  st.textContent += ` @media print { #vungIn { zoom: ${thuNho.toFixed(3)}; } #vungIn, #vungIn * { font-family: "Times New Roman", Times, serif !important; } }`;
+  const cu = document.title; document.title = ten;
+  window.print();
+  document.title = cu;
+}
+
+async function lamFile(mau, dau) {
+  const g = A.giaTri(HD, mau === "tam-ung" ? null : HDON, them(dau));
+  const thieu = Object.entries({ "Số hợp đồng": g.so_hd, "Bên A": g.a_ten, ...(mau !== "tam-ung" ? { "Số hoá đơn": g.so_hdon, "Tổng hoá đơn": g.tong_hdon } : { "Khối lượng": g.kl_dk, "Đơn giá": g.don_gia }) }).filter(([, v]) => !v).map(([k]) => k);
+  if (thieu.length && !confirm("Còn trống: " + thieu.join(", ") + ". Vẫn làm file?")) return null;
+  if (dau && !DAU) { alert('Chưa có ảnh dấu. Chị bấm "Chọn ảnh dấu…" và chọn file ảnh dấu em gửi qua Zalo (chỉ làm 1 lần).'); return null; }
   const out = await A.taoDocx(JSZip, b64(MAU[mau]), g, dau ? b64(DAU) : null);
-  const ten = { "tam-ung": `De nghi tam ung ${g.ddmm}-${g.ng_y}`, "de-nghi-tt": `De nghi thanh toan ${g.ddmm}-${g.ng_y}`, "quyet-toan": `Bien ban quyet toan ${g.ng_d}-${g.ng_m}-${g.ng_y}` }[mau] + (dau ? " (co dau)" : "") + ".docx";
+  const ten = { "tam-ung": `De nghi tam ung ${g.ddmm}-${g.ng_y}`, "de-nghi-tt": `De nghi thanh toan ${g.ddmm}-${g.ng_y}`, "quyet-toan": `Bien ban quyet toan ${g.ng_d}-${g.ng_m}-${g.ng_y}` }[mau] + (dau ? " (co dau)" : "");
+  return { out, ten };
+}
+document.querySelectorAll("[data-pdf]").forEach(b => b.onclick = async () => {
+  const r = await lamFile(b.dataset.pdf, !!b.dataset.dau); if (!r) return;
+  try { await inPDF(r.out, r.ten); } catch (e) { alert("Không dựng được PDF: " + e.message + "\nChị dùng nút Word rồi Lưu thành PDF trong Word nhé."); }
+});
+document.querySelectorAll("[data-mau]").forEach(b => b.onclick = async () => {
+  const mau = b.dataset.mau, dau = !!b.dataset.dau;
+  const r = await lamFile(mau, dau); if (!r) return;
+  const out = r.out, ten = r.ten + ".docx";
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }));
   a.download = ten; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 });
-
 // mở lại: lấy hợp đồng / hoá đơn / tạm ứng lần trước
 try {
   const c = JSON.parse(localStorage.getItem("achau") || "null");
